@@ -1,0 +1,1 @@
+A course platform (mini Udemy), the exercise repo for the AI Coding Crash Course. Setup and scripts: `README.md`.

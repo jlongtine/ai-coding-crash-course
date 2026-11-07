@@ -1,0 +1,3 @@
+interface:
+  display_name: "Route Modules"
+  short_description: "Register, guard, and keep route components client-safe"

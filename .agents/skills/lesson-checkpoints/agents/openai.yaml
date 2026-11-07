@@ -1,0 +1,3 @@
+interface:
+  display_name: "Lesson Checkpoints"
+  short_description: "Keep lesson slugs intact when rewriting history"

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Testing Services"
+  short_description: "Mock ~/db with an in-memory test database"
