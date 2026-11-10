@@ -103,16 +103,52 @@ function formatRating(rating: { average: number | null; count: number }) {
     : `${rating.average.toFixed(1)} (${numberFormat.format(rating.count)})`;
 }
 
+/** last30Days − previous30Days, for a tile's "vs previous 30 days" line. */
+function changeOf(recent: { last30Days: number; previous30Days: number }) {
+  return recent.last30Days - recent.previous30Days;
+}
+
+/** A signed change against the previous 30 days, formatted by `format`. */
+type TileChange = { delta: number; format: (amount: number) => string };
+
+function ChangeLine({ delta, format }: TileChange) {
+  if (delta === 0) {
+    return (
+      <p className="mt-1 text-xs text-muted-foreground">
+        No change vs previous 30 days
+      </p>
+    );
+  }
+
+  const sign = delta > 0 ? "+" : "−";
+  const tone =
+    delta > 0
+      ? "text-green-700 dark:text-green-400"
+      : "text-amber-700 dark:text-amber-400";
+
+  return (
+    <p className={`mt-1 text-xs ${tone}`}>
+      <span className="tabular-nums">
+        {sign}
+        {format(Math.abs(delta))}
+      </span>{" "}
+      <span className="text-muted-foreground">vs previous 30 days</span>
+    </p>
+  );
+}
+
 function StatTile({
   label,
   value,
   icon,
   to,
+  change,
 }: {
   label: string;
   value: string;
   icon: ReactNode;
   to?: string;
+  change?: TileChange;
 }) {
   const tile = (
     <Card className={to ? "h-full transition-colors hover:bg-muted/50" : "h-full"}>
@@ -120,6 +156,7 @@ function StatTile({
         <div>
           <p className="text-sm text-muted-foreground">{label}</p>
           <p className="mt-1 text-3xl font-bold tabular-nums">{value}</p>
+          {change && <ChangeLine {...change} />}
         </div>
         <span className="text-muted-foreground">{icon}</span>
       </CardContent>
@@ -156,7 +193,7 @@ export function HydrateFallback() {
 export default function InstructorDashboard({
   loaderData,
 }: Route.ComponentProps) {
-  const { courses, totals, unansweredQuestions, drafts } = loaderData;
+  const { courses, totals, recent, unansweredQuestions, drafts } = loaderData;
 
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -189,11 +226,19 @@ export default function InstructorDashboard({
           label="Gross sales"
           value={formatCurrency(totals.grossSalesCents)}
           icon={<DollarSign className="size-5" />}
+          change={{
+            delta: changeOf(recent.grossSalesCents),
+            format: formatCurrency,
+          }}
         />
         <StatTile
           label="Total students"
           value={numberFormat.format(totals.students)}
           icon={<Users className="size-5" />}
+          change={{
+            delta: changeOf(recent.newStudents),
+            format: (count) => numberFormat.format(count),
+          }}
         />
         <StatTile
           label="Avg completion"

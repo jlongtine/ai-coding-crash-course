@@ -44,9 +44,20 @@ export type AnalyticsTotals = {
   completedStudents: number;
 };
 
+export type WindowedValues = {
+  last30Days: number;
+  previous30Days: number;
+};
+
+export type RecentAnalytics = {
+  grossSalesCents: WindowedValues;
+  newStudents: WindowedValues;
+};
+
 export type InstructorAnalytics = {
   courses: CourseAnalytics[];
   totals: AnalyticsTotals;
+  recent: RecentAnalytics;
 };
 
 const IN_SCOPE_STATUSES = [CourseStatus.Published, CourseStatus.Archived];
@@ -158,11 +169,72 @@ function countCompletedStudentsByCourse(
 }
 
 /**
+ * The two 30-day windows ending at `now`, as ISO strings comparable with the
+ * stored timestamps: last 30 days is [now − 30d, now), previous 30 days is
+ * [now − 60d, now − 30d).
+ */
+function thirtyDayWindows(now: Date) {
+  const day = 24 * 60 * 60 * 1000;
+  return {
+    end: now.toISOString(),
+    middle: new Date(now.getTime() - 30 * day).toISOString(),
+    start: new Date(now.getTime() - 60 * day).toISOString(),
+  };
+}
+
+/**
+ * Amount paid across the courses in each 30-day window, bucketed by purchase
+ * date.
+ */
+function sumGrossSalesInWindows(
+  courseIds: number[],
+  now: Date
+): WindowedValues {
+  const { start, middle, end } = thirtyDayWindows(now);
+  const createdAt = purchases.createdAt;
+
+  const row = db
+    .select({
+      last30Days: sql<number>`coalesce(sum(case when ${createdAt} >= ${middle} and ${createdAt} < ${end} then ${purchases.amountPaid} end), 0)`,
+      previous30Days: sql<number>`coalesce(sum(case when ${createdAt} >= ${start} and ${createdAt} < ${middle} then ${purchases.amountPaid} end), 0)`,
+    })
+    .from(purchases)
+    .where(inArray(purchases.courseId, courseIds))
+    .get();
+
+  return row ?? { last30Days: 0, previous30Days: 0 };
+}
+
+/**
+ * New enrollments across the courses in each 30-day window, bucketed by
+ * enrollment date.
+ */
+function countNewStudentsInWindows(
+  courseIds: number[],
+  now: Date
+): WindowedValues {
+  const { start, middle, end } = thirtyDayWindows(now);
+  const enrolledAt = enrollments.enrolledAt;
+
+  const row = db
+    .select({
+      last30Days: sql<number>`count(case when ${enrolledAt} >= ${middle} and ${enrolledAt} < ${end} then 1 end)`,
+      previous30Days: sql<number>`count(case when ${enrolledAt} >= ${start} and ${enrolledAt} < ${middle} then 1 end)`,
+    })
+    .from(enrollments)
+    .where(inArray(enrollments.courseId, courseIds))
+    .get();
+
+  return row ?? { last30Days: 0, previous30Days: 0 };
+}
+
+/**
  * Per-course metrics for every in-scope course an instructor owns, ordered by
  * title, plus totals across them.
  */
 export function getInstructorAnalytics(
-  instructorId: number
+  instructorId: number,
+  now: Date = new Date()
 ): InstructorAnalytics {
   const scope = getInScopeCourses(instructorId);
   const courseIds = scope.map((course) => course.id);
@@ -171,6 +243,8 @@ export function getInstructorAnalytics(
   const grossSalesByCourse = sumGrossSalesByCourse(courseIds);
   const completedStudentsByCourse = countCompletedStudentsByCourse(courseIds);
   const ratingsByCourse = getCourseRatingSummaries(courseIds);
+  const recentGrossSales = sumGrossSalesInWindows(courseIds, now);
+  const recentNewStudents = countNewStudentsInWindows(courseIds, now);
 
   const courseAnalytics = scope.map((course): CourseAnalytics => ({
     courseId: course.id,
@@ -192,6 +266,10 @@ export function getInstructorAnalytics(
         courseAnalytics,
         (course) => course.completedStudents
       ),
+    },
+    recent: {
+      grossSalesCents: recentGrossSales,
+      newStudents: recentNewStudents,
     },
   };
 }
