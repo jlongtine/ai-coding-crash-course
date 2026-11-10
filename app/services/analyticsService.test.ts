@@ -164,7 +164,7 @@ describe("analyticsService", () => {
 
       expect(analytics).toEqual({
         courses: [],
-        totals: { students: 0, grossSalesCents: 0 },
+        totals: { students: 0, grossSalesCents: 0, completedStudents: 0 },
       });
     });
   });
@@ -280,5 +280,221 @@ describe("gross sales", () => {
       }),
     ]);
     expect(analytics.totals.grossSalesCents).toBe(7499);
+  });
+});
+
+describe("completion and ratings", () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    base = seedBaseData(testDb);
+  });
+
+  /** Creates modules of lessons in a course; returns lesson ids per module. */
+  function createLessons(courseId: number, lessonsPerModule: number[]) {
+    return lessonsPerModule.map((lessonCount, moduleIndex) => {
+      const mod = testDb
+        .insert(schema.modules)
+        .values({
+          courseId,
+          title: `Module ${moduleIndex + 1}`,
+          position: moduleIndex,
+        })
+        .returning()
+        .get();
+      return Array.from(
+        { length: lessonCount },
+        (_, lessonIndex) =>
+          testDb
+            .insert(schema.lessons)
+            .values({
+              moduleId: mod.id,
+              title: `Lesson ${moduleIndex + 1}.${lessonIndex + 1}`,
+              position: lessonIndex,
+            })
+            .returning()
+            .get().id
+      );
+    });
+  }
+
+  function enroll(courseId: number) {
+    const student = createStudent();
+    testDb
+      .insert(schema.enrollments)
+      .values({ userId: student.id, courseId })
+      .run();
+    return student;
+  }
+
+  function setProgress(
+    userId: number,
+    lessonIds: number[],
+    status = schema.LessonProgressStatus.Completed
+  ) {
+    for (const lessonId of lessonIds) {
+      testDb
+        .insert(schema.lessonProgress)
+        .values({ userId, lessonId, status })
+        .run();
+    }
+  }
+
+  function rate(courseId: number, rating: number) {
+    testDb
+      .insert(schema.courseRatings)
+      .values({ userId: createStudent().id, courseId, rating })
+      .run();
+  }
+
+  function courseRow(courseId: number) {
+    return getInstructorAnalytics(base.instructor.id).courses.find(
+      (course) => course.courseId === courseId
+    );
+  }
+
+  it("counts a student who completed every lesson across multiple modules", () => {
+    const [moduleOne, moduleTwo] = createLessons(base.course.id, [2, 3]);
+    const finisher = enroll(base.course.id);
+    setProgress(finisher.id, [...moduleOne, ...moduleTwo]);
+    enroll(base.course.id);
+
+    expect(courseRow(base.course.id)).toMatchObject({
+      students: 2,
+      completedStudents: 1,
+    });
+  });
+  it("does not count a student missing one lesson", () => {
+    const [moduleOne, moduleTwo] = createLessons(base.course.id, [2, 2]);
+    const student = enroll(base.course.id);
+    setProgress(student.id, [...moduleOne, moduleTwo[0]]);
+
+    expect(courseRow(base.course.id)).toMatchObject({
+      students: 1,
+      completedStudents: 0,
+    });
+  });
+
+  it("does not count lessons that are only in progress", () => {
+    const [lessonIds] = createLessons(base.course.id, [2]);
+    const student = enroll(base.course.id);
+    setProgress(student.id, [lessonIds[0]]);
+    setProgress(
+      student.id,
+      [lessonIds[1]],
+      schema.LessonProgressStatus.InProgress
+    );
+
+    expect(courseRow(base.course.id)?.completedStudents).toBe(0);
+  });
+
+  it("does not count completed lessons from a student who is not enrolled", () => {
+    const [lessonIds] = createLessons(base.course.id, [2]);
+    setProgress(createStudent().id, lessonIds);
+
+    expect(courseRow(base.course.id)).toMatchObject({
+      students: 0,
+      completedStudents: 0,
+    });
+  });
+
+  it("does not count completions of a lesson in another course", () => {
+    const other = createCourse("Other Course", schema.CourseStatus.Published);
+    const [ours] = createLessons(base.course.id, [2]);
+    const [theirs] = createLessons(other.id, [1]);
+    const student = enroll(base.course.id);
+    setProgress(student.id, [ours[0], theirs[0]]);
+
+    expect(courseRow(base.course.id)?.completedStudents).toBe(0);
+  });
+
+  it("gives a course with no lessons no completions", () => {
+    enroll(base.course.id);
+
+    expect(courseRow(base.course.id)).toMatchObject({
+      students: 1,
+      completedStudents: 0,
+    });
+  });
+
+  it("gives a course with zero students zero completions", () => {
+    createLessons(base.course.id, [3]);
+
+    expect(courseRow(base.course.id)).toMatchObject({
+      students: 0,
+      completedStudents: 0,
+    });
+  });
+
+  it("excludes completions in drafts and other instructors' courses", () => {
+    const other = testDb
+      .insert(schema.users)
+      .values({
+        name: "Other Instructor",
+        email: "other-instructor@example.com",
+        role: schema.UserRole.Instructor,
+      })
+      .returning()
+      .get();
+    const draft = createCourse("Draft Course", schema.CourseStatus.Draft);
+    const theirs = createCourse(
+      "Their Course",
+      schema.CourseStatus.Published,
+      other.id
+    );
+    for (const course of [draft, theirs]) {
+      const [lessonIds] = createLessons(course.id, [1]);
+      setProgress(enroll(course.id).id, lessonIds);
+    }
+
+    const analytics = getInstructorAnalytics(base.instructor.id);
+
+    expect(analytics.courses.map((c) => c.courseId)).toEqual([base.course.id]);
+    expect(analytics.totals).toEqual({
+      students: 0,
+      grossSalesCents: 0,
+      completedStudents: 0,
+    });
+  });
+
+  it("totals completed students across courses", () => {
+    const archived = createCourse("Old Course", schema.CourseStatus.Archived);
+    const [published] = createLessons(base.course.id, [2]);
+    const [old] = createLessons(archived.id, [1]);
+    setProgress(enroll(base.course.id).id, published);
+    setProgress(enroll(base.course.id).id, published);
+    enroll(base.course.id);
+    setProgress(enroll(archived.id).id, old);
+    enroll(archived.id);
+
+    const analytics = getInstructorAnalytics(base.instructor.id);
+
+    expect(analytics.courses).toEqual([
+      expect.objectContaining({ courseId: archived.id, completedStudents: 1 }),
+      expect.objectContaining({
+        courseId: base.course.id,
+        completedStudents: 2,
+      }),
+    ]);
+    expect(analytics.totals).toEqual({
+      students: 5,
+      grossSalesCents: 0,
+      completedStudents: 3,
+    });
+  });
+
+  it("attaches each course's rating summary, empty when unrated", () => {
+    const unrated = createCourse(
+      "Unrated Course",
+      schema.CourseStatus.Published
+    );
+    rate(base.course.id, 5);
+    rate(base.course.id, 4);
+    rate(base.course.id, 4);
+
+    expect(courseRow(base.course.id)?.rating).toEqual({
+      average: 4.3,
+      count: 3,
+    });
+    expect(courseRow(unrated.id)?.rating).toEqual({ average: null, count: 0 });
   });
 });

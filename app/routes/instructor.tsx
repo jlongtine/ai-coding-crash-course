@@ -5,7 +5,7 @@ import { getCoursesByInstructor } from "~/services/courseService";
 import { getInstructorAnalytics } from "~/services/analyticsService";
 import { getUnansweredQuestions } from "~/services/commentService";
 import { getCurrentUserId } from "~/lib/session";
-import { formatPrice } from "~/lib/utils";
+import { formatCurrency } from "~/lib/utils";
 import { getUserById } from "~/services/userService";
 import { Card, CardContent } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   BarChart3,
   DollarSign,
+  CircleCheck,
   GraduationCap,
   MessageCircleQuestion,
   Pencil,
@@ -32,11 +33,6 @@ import { CourseStatus, UserRole } from "~/db/schema";
 // instructor can still reach their editor from here.
 
 const numberFormat = new Intl.NumberFormat("en-US");
-
-// formatPrice shows zero as "Free", which reads wrong for sales.
-function formatGrossSales(cents: number) {
-  return cents === 0 ? "$0.00" : formatPrice(cents);
-}
 
 export function meta() {
   return [
@@ -90,6 +86,23 @@ function statusBadge(status: string) {
   }
 }
 
+const percentFormat = new Intl.NumberFormat("en-US", {
+  style: "percent",
+  maximumFractionDigits: 0,
+});
+
+function formatCompletionRate(completedStudents: number, students: number) {
+  return students === 0
+    ? "—"
+    : percentFormat.format(completedStudents / students);
+}
+
+function formatRating(rating: { average: number | null; count: number }) {
+  return rating.average === null
+    ? "—"
+    : `${rating.average.toFixed(1)} (${numberFormat.format(rating.count)})`;
+}
+
 function StatTile({
   label,
   value,
@@ -131,7 +144,7 @@ export function HydrateFallback() {
         <Skeleton className="h-10 w-32" />
       </div>
       <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {Array.from({ length: 3 }).map((_, i) => (
+        {Array.from({ length: 4 }).map((_, i) => (
           <Skeleton key={i} className="h-28 rounded-xl" />
         ))}
       </div>
@@ -174,13 +187,21 @@ export default function InstructorDashboard({
       <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatTile
           label="Gross sales"
-          value={formatGrossSales(totals.grossSalesCents)}
+          value={formatCurrency(totals.grossSalesCents)}
           icon={<DollarSign className="size-5" />}
         />
         <StatTile
           label="Total students"
           value={numberFormat.format(totals.students)}
           icon={<Users className="size-5" />}
+        />
+        <StatTile
+          label="Avg completion"
+          value={formatCompletionRate(
+            totals.completedStudents,
+            totals.students
+          )}
+          icon={<CircleCheck className="size-5" />}
         />
         <StatTile
           label="Unanswered questions"
@@ -213,6 +234,8 @@ export default function InstructorDashboard({
                   <th className={headerCell}>Course</th>
                   <th className={numericHeaderCell}>Students</th>
                   <th className={numericHeaderCell}>Gross sales</th>
+                  <th className={numericHeaderCell}>Completion</th>
+                  <th className={numericHeaderCell}>Rating</th>
                   <th className={headerCell}>
                     <span className="sr-only">Actions</span>
                   </th>
@@ -239,7 +262,16 @@ export default function InstructorDashboard({
                       {numberFormat.format(course.students)}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums">
-                      {formatGrossSales(course.grossSalesCents)}
+                      {formatCurrency(course.grossSalesCents)}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums">
+                      {formatCompletionRate(
+                        course.completedStudents,
+                        course.students
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums">
+                      {formatRating(course.rating)}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-2">
