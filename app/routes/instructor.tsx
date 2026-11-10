@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import { Link } from "react-router";
 import type { Route } from "./+types/instructor";
 import { getCoursesByInstructor } from "~/services/courseService";
@@ -6,6 +5,12 @@ import { getInstructorAnalytics } from "~/services/analyticsService";
 import { getUnansweredQuestions } from "~/services/commentService";
 import { getCurrentUserId } from "~/lib/session";
 import { formatCurrency } from "~/lib/utils";
+import {
+  formatCompletionRate,
+  formatCount,
+  formatRating,
+} from "~/lib/analytics-format";
+import { StatTile } from "~/components/stat-tile";
 import { getUserById } from "~/services/userService";
 import { Card, CardContent } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
@@ -31,8 +36,6 @@ import { CourseStatus, UserRole } from "~/db/schema";
 //
 // Drafts sit outside analytics, but they are listed below the table so the
 // instructor can still reach their editor from here.
-
-const numberFormat = new Intl.NumberFormat("en-US");
 
 export function meta() {
   return [
@@ -86,84 +89,9 @@ function statusBadge(status: string) {
   }
 }
 
-const percentFormat = new Intl.NumberFormat("en-US", {
-  style: "percent",
-  maximumFractionDigits: 0,
-});
-
-function formatCompletionRate(completedStudents: number, students: number) {
-  return students === 0
-    ? "—"
-    : percentFormat.format(completedStudents / students);
-}
-
-function formatRating(rating: { average: number | null; count: number }) {
-  return rating.average === null
-    ? "—"
-    : `${rating.average.toFixed(1)} (${numberFormat.format(rating.count)})`;
-}
-
 /** last30Days − previous30Days, for a tile's "vs previous 30 days" line. */
 function changeOf(recent: { last30Days: number; previous30Days: number }) {
   return recent.last30Days - recent.previous30Days;
-}
-
-/** A signed change against the previous 30 days, formatted by `format`. */
-type TileChange = { delta: number; format: (amount: number) => string };
-
-function ChangeLine({ delta, format }: TileChange) {
-  if (delta === 0) {
-    return (
-      <p className="mt-1 text-xs text-muted-foreground">
-        No change vs previous 30 days
-      </p>
-    );
-  }
-
-  const sign = delta > 0 ? "+" : "−";
-  const tone =
-    delta > 0
-      ? "text-green-700 dark:text-green-400"
-      : "text-amber-700 dark:text-amber-400";
-
-  return (
-    <p className={`mt-1 text-xs ${tone}`}>
-      <span className="tabular-nums">
-        {sign}
-        {format(Math.abs(delta))}
-      </span>{" "}
-      <span className="text-muted-foreground">vs previous 30 days</span>
-    </p>
-  );
-}
-
-function StatTile({
-  label,
-  value,
-  icon,
-  to,
-  change,
-}: {
-  label: string;
-  value: string;
-  icon: ReactNode;
-  to?: string;
-  change?: TileChange;
-}) {
-  const tile = (
-    <Card className={to ? "h-full transition-colors hover:bg-muted/50" : "h-full"}>
-      <CardContent className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-sm text-muted-foreground">{label}</p>
-          <p className="mt-1 text-3xl font-bold tabular-nums">{value}</p>
-          {change && <ChangeLine {...change} />}
-        </div>
-        <span className="text-muted-foreground">{icon}</span>
-      </CardContent>
-    </Card>
-  );
-
-  return to ? <Link to={to}>{tile}</Link> : tile;
 }
 
 const headerCell =
@@ -233,11 +161,11 @@ export default function InstructorDashboard({
         />
         <StatTile
           label="Total students"
-          value={numberFormat.format(totals.students)}
+          value={formatCount(totals.students)}
           icon={<Users className="size-5" />}
           change={{
             delta: changeOf(recent.newStudents),
-            format: (count) => numberFormat.format(count),
+            format: formatCount,
           }}
         />
         <StatTile
@@ -250,7 +178,7 @@ export default function InstructorDashboard({
         />
         <StatTile
           label="Unanswered questions"
-          value={numberFormat.format(unansweredQuestions)}
+          value={formatCount(unansweredQuestions)}
           icon={<MessageCircleQuestion className="size-5" />}
           to="/instructor/questions"
         />
@@ -304,7 +232,7 @@ export default function InstructorDashboard({
                       </div>
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums">
-                      {numberFormat.format(course.students)}
+                      {formatCount(course.students)}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums">
                       {formatCurrency(course.grossSalesCents)}
