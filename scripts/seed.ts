@@ -12,6 +12,7 @@ import {
   QuestionType,
   TeamMemberRole,
 } from "../app/db/schema";
+import { calculatePppPrice } from "../app/lib/ppp";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,6 +30,22 @@ function daysAgo(n: number): string {
   const d = new Date();
   d.setDate(d.getDate() - n);
   return d.toISOString();
+}
+
+function hoursAgo(n: number): string {
+  return new Date(Date.now() - n * 60 * 60 * 1000).toISOString();
+}
+
+// Deterministic PRNG (mulberry32) so every reseed produces the same cohort.
+function createRng(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 function slugify(title: string): string {
@@ -1913,18 +1930,332 @@ You've completed the Building REST APIs course. You now have the skills to build
     `Created 1 team with Bossy McBossface as admin, 1 team purchase, and ${seededCoupons.length} coupons (2 redeemed, 3 available).`
   );
 
+  // ─── Analytics Cohort ───
+  // A generated crowd of students on top of the hand-written scenarios above,
+  // so instructor analytics have realistic numbers: enrollments spread over
+  // each course's lifetime (course 1 growing, course 2 roughly flat lately),
+  // purchases across every PPP tier, a second team purchase with some seats
+  // unredeemed, and lesson progress that tails off with a cliff per course.
+  // A fixed-seed PRNG keeps the shape identical on every reseed; timestamps
+  // stay relative to now. Cohort users are inserted after the named users, so
+  // existing ids and scenarios are untouched.
+
+  const rng = createRng(20260901);
+  const randomInt = (min: number, max: number) =>
+    min + Math.floor(rng() * (max - min + 1));
+  const pick = <T>(items: readonly T[]): T =>
+    items[Math.floor(rng() * items.length)];
+  function shuffled<T>(items: readonly T[]): T[] {
+    const copy = [...items];
+    for (let i = copy.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy;
+  }
+
+  // Weighted so about half pay full price and the rest spread over tiers 2–4.
+  const cohortCountries = [
+    ...Array(14).fill("US"),
+    ...Array(5).fill("GB"),
+    ...Array(4).fill("CA"),
+    ...Array(4).fill("DE"),
+    ...["AU", "AU", "FR", "FR", "NL", "SE", "JP"],
+    ...["BR", "BR", "BR", "BR", "MX", "MX", "MX", "PL", "PL", "PL", "TR"],
+    ...Array(8).fill("IN"),
+    ...["PH", "PH", "ZA", "ZA", "CO", "CO", "VN"],
+    ...["NG", "NG", "NG", "PK", "PK", "EG", "KE"],
+  ] as string[];
+
+  const firstNames = (
+    "Aarav Ana Ben Chloe Daniel Diego Elif Fatima Felix Grace Hana " +
+    "Isaac Jonas Kofi Lucia Maya Mateo Nadia Noah Omar Priya Quinn " +
+    "Rafael Rina Samuel Tariq Uma Victor Wei Yara Zoe Kenji Ingrid " +
+    "Chidi Leila"
+  ).split(" ");
+  const lastNames = (
+    "Adeyemi Bauer Castillo Das Eriksson Fernandes Garcia Haddad Ito " +
+    "Jansen Kowalski Lopez Mensah Nguyen Okafor Patel Quispe Rossi " +
+    "Santos Tanaka Usman Varga Walsh Yilmaz Zhang Reyes Kim Novak Ahmed " +
+    "Silva"
+  ).split(" ");
+
+  const cohortSize = 90;
+  const cohortProfiles: { name: string; email: string; country: string }[] = [];
+  const usedNames = new Set<string>();
+  while (cohortProfiles.length < cohortSize) {
+    const first = pick(firstNames);
+    const last = pick(lastNames);
+    const name = `${first} ${last}`;
+    if (usedNames.has(name)) continue;
+    usedNames.add(name);
+    cohortProfiles.push({
+      name,
+      email: `${first}.${last}@learner.dev`.toLowerCase(),
+      country: pick(cohortCountries),
+    });
+  }
+
+  // Per course: how many students buy individually, the window enrollments
+  // fall in (a course can't sell before it exists), how strongly enrollments
+  // skew toward recent days (>1 = recent-heavy, <1 = older-heavy), and the cliffs —
+  // lesson indexes (flat, in course order) where far fewer students continue.
+  const cohortCourses = [
+    {
+      course: course1,
+      lessonIds: course1LessonIds,
+      individualEnrollments: 52,
+      windowDays: 89,
+      recencySkew: 1.4,
+      cliffs: { 8: 0.6 } as Record<number, number>, // "Generics Basics"
+    },
+    {
+      course: course2,
+      lessonIds: course2LessonIds,
+      individualEnrollments: 44,
+      windowDays: 74,
+      recencySkew: 0.8,
+      // "Connecting to a Database" (mild) and "JWT Authentication" (steep)
+      cliffs: { 8: 0.8, 12: 0.55 } as Record<number, number>,
+    },
+  ];
+
+  // A company buys 12 seats of course 1; 8 are redeemed, 4 sit unused.
+  const teamSeats = 12;
+  const teamRedeemed = 8;
+  const teamPurchaseHoursAgo = 70 * 24;
+
+  type PlannedEnrollment = {
+    profileIndex: number;
+    courseIndex: number;
+    hoursAgo: number;
+    via: "purchase" | "coupon";
+  };
+  const planned: PlannedEnrollment[] = [];
+
+  cohortCourses.forEach((plan, courseIndex) => {
+    const order = shuffled(cohortProfiles.map((_, i) => i));
+    for (const profileIndex of order.slice(0, plan.individualEnrollments)) {
+      const windowHours = plan.windowDays * 24;
+      planned.push({
+        profileIndex,
+        courseIndex,
+        hoursAgo: 2 + (windowHours - 2) * rng() ** plan.recencySkew,
+        via: "purchase",
+      });
+    }
+    if (courseIndex === 0) {
+      const redeemers = order.slice(
+        plan.individualEnrollments,
+        plan.individualEnrollments + teamRedeemed
+      );
+      for (const profileIndex of redeemers) {
+        planned.push({
+          profileIndex,
+          courseIndex,
+          hoursAgo: 2 + (teamPurchaseHoursAgo - 48) * rng(),
+          via: "coupon",
+        });
+      }
+    }
+  });
+  planned.sort((a, b) => b.hoursAgo - a.hoursAgo);
+
+  // Each user signs up shortly before their first enrollment.
+  const firstEnrollmentHours = new Map<number, number>();
+  for (const p of planned) {
+    const prev = firstEnrollmentHours.get(p.profileIndex) ?? 0;
+    firstEnrollmentHours.set(p.profileIndex, Math.max(prev, p.hoursAgo));
+  }
+
+  const cohortUsers = db
+    .insert(schema.users)
+    .values(
+      cohortProfiles.map((profile, i) => ({
+        name: profile.name,
+        email: profile.email,
+        role: UserRole.Student,
+        avatarUrl: `https://api.dicebear.com/9.x/avataaars/svg?seed=${encodeURIComponent(profile.name)}`,
+        createdAt: hoursAgo(
+          (firstEnrollmentHours.get(i) ?? randomInt(24, 89 * 24)) +
+            randomInt(1, 72)
+        ),
+      }))
+    )
+    .returning()
+    .all();
+
+  const [teamLead] = db
+    .insert(schema.users)
+    .values({
+      name: "Dana Whitfield",
+      email: "dana.whitfield@acme.dev",
+      role: UserRole.Student,
+      avatarUrl: "https://api.dicebear.com/9.x/avataaars/svg?seed=dana",
+      createdAt: hoursAgo(teamPurchaseHoursAgo + 72),
+    })
+    .returning()
+    .all();
+
+  // Team purchase: Dana buys seats for her team at the US (full) price.
+  const [team2] = db
+    .insert(schema.teams)
+    .values({ createdAt: hoursAgo(teamPurchaseHoursAgo) })
+    .returning()
+    .all();
+
+  db.insert(schema.teamMembers)
+    .values({
+      teamId: team2.id,
+      userId: teamLead.id,
+      role: TeamMemberRole.Admin,
+      createdAt: hoursAgo(teamPurchaseHoursAgo),
+    })
+    .run();
+
+  const teamCountry = "US";
+  const [teamPurchase2] = db
+    .insert(schema.purchases)
+    .values({
+      userId: teamLead.id,
+      courseId: course1.id,
+      amountPaid: calculatePppPrice(course1.price, teamCountry) * teamSeats,
+      country: teamCountry,
+      createdAt: hoursAgo(teamPurchaseHoursAgo),
+    })
+    .returning()
+    .all();
+
+  const couponRedemptions = planned.filter((p) => p.via === "coupon");
+  db.insert(schema.coupons)
+    .values(
+      Array.from({ length: teamSeats }, (_, i) => {
+        const redemption = couponRedemptions[i];
+        return {
+          teamId: team2.id,
+          courseId: course1.id,
+          code: `TEAM-TS-${Math.floor(rng() * 0xffffff)
+            .toString(16)
+            .toUpperCase()
+            .padStart(6, "0")}${i}`,
+          purchaseId: teamPurchase2.id,
+          redeemedByUserId: redemption
+            ? cohortUsers[redemption.profileIndex].id
+            : null,
+          redeemedAt: redemption ? hoursAgo(redemption.hoursAgo) : null,
+          createdAt: hoursAgo(teamPurchaseHoursAgo),
+        };
+      })
+    )
+    .run();
+
+  // Enrollments, purchases, lesson progress and ratings.
+  let cohortProgressRows = 0;
+  let cohortRatings = 0;
+  const cohortEnrollmentCounts = cohortCourses.map(() => 0);
+
+  for (const p of planned) {
+    const plan = cohortCourses[p.courseIndex];
+    const user = cohortUsers[p.profileIndex];
+    const country = cohortProfiles[p.profileIndex].country;
+    const enrolledAt = hoursAgo(p.hoursAgo);
+
+    if (p.via === "purchase") {
+      db.insert(schema.purchases)
+        .values({
+          userId: user.id,
+          courseId: plan.course.id,
+          amountPaid: plan.course.pppEnabled
+            ? calculatePppPrice(plan.course.price, country)
+            : plan.course.price,
+          country,
+          createdAt: enrolledAt,
+        })
+        .run();
+    }
+
+    db.insert(schema.enrollments)
+      .values({ userId: user.id, courseId: plan.course.id, enrolledAt })
+      .run();
+    cohortEnrollmentCounts[p.courseIndex]++;
+
+    // How far would this student get given unlimited time? Some never start;
+    // most continue lesson to lesson, fewer past each cliff.
+    let reach = 0;
+    for (let i = 0; i < plan.lessonIds.length; i++) {
+      const continueRate = i === 0 ? 0.9 : (plan.cliffs[i] ?? 0.96);
+      if (rng() >= continueRate) break;
+      reach++;
+    }
+    // ...and how far they've actually got, given when they enrolled.
+    const lessonsPerDay = 0.4 + rng() * 1.6;
+    const hoursPerLesson = 24 / lessonsPerDay;
+    const completed = Math.min(reach, Math.floor(p.hoursAgo / hoursPerLesson));
+
+    const progressRows: (typeof schema.lessonProgress.$inferInsert)[] = [];
+    let lastCompletedHoursAgo = p.hoursAgo;
+    for (let i = 0; i < completed; i++) {
+      lastCompletedHoursAgo =
+        p.hoursAgo - (i + 0.5 + 0.5 * rng()) * hoursPerLesson;
+      progressRows.push({
+        userId: user.id,
+        lessonId: plan.lessonIds[i],
+        status: LessonProgressStatus.Completed,
+        completedAt: hoursAgo(lastCompletedHoursAgo),
+      });
+    }
+    if (completed < plan.lessonIds.length && rng() < 0.4) {
+      progressRows.push({
+        userId: user.id,
+        lessonId: plan.lessonIds[completed],
+        status: LessonProgressStatus.InProgress,
+      });
+    }
+    if (progressRows.length > 0) {
+      db.insert(schema.lessonProgress).values(progressRows).run();
+      cohortProgressRows += progressRows.length;
+    }
+
+    // Students a few lessons in sometimes leave a rating; finishers rate higher.
+    const finished = completed === plan.lessonIds.length;
+    if (completed >= 3 && rng() < (finished ? 0.6 : 0.25)) {
+      const ratedHoursAgo = lastCompletedHoursAgo * rng();
+      db.insert(schema.courseRatings)
+        .values({
+          userId: user.id,
+          courseId: plan.course.id,
+          rating: finished ? pick([5, 5, 5, 4, 4]) : pick([5, 4, 4, 3, 3, 2]),
+          createdAt: hoursAgo(ratedHoursAgo),
+          updatedAt: hoursAgo(ratedHoursAgo),
+        })
+        .run();
+      cohortRatings++;
+    }
+  }
+
+  const cohortPurchases = planned.filter((p) => p.via === "purchase").length;
+  console.log(
+    `Created analytics cohort: ${cohortUsers.length + 1} users, ${planned.length} enrollments (${cohortEnrollmentCounts.join(" + ")}), ${cohortPurchases} individual purchases, 1 team purchase with ${teamSeats} coupons (${teamRedeemed} redeemed), ${cohortProgressRows} lesson progress records, ${cohortRatings} ratings.`
+  );
+
   console.log("\n✓ Seed complete!");
-  console.log("  Users: 9 (1 admin, 2 instructors, 6 students)");
+  console.log(
+    `  Users: ${9 + cohortUsers.length + 1} (1 admin, 2 instructors, ${6 + cohortUsers.length + 1} students)`
+  );
   console.log("  Categories: 5");
   console.log(
     `  Courses: 2 (${course1LessonIds.length} + ${course2LessonIds.length} lessons)`
   );
   console.log("  Quizzes: 3");
-  console.log("  Enrollments: 7");
-  console.log("  Course ratings: 6");
+  console.log(
+    `  Enrollments: ${7 + planned.length} (course 1: ${4 + cohortEnrollmentCounts[0]}, course 2: ${3 + cohortEnrollmentCounts[1]})`
+  );
+  console.log(`  Course ratings: ${6 + cohortRatings}`);
   console.log("  Lesson comments: 15 (4 questions awaiting an answer)");
-  console.log("  Purchases: 6 (5 individual + 1 team)");
-  console.log("  Teams: 1 (with 5 coupons)");
+  console.log(
+    `  Purchases: ${6 + cohortPurchases + 1} (${5 + cohortPurchases} individual + 2 team)`
+  );
+  console.log(`  Teams: 2 (with 5 + ${teamSeats} coupons)`);
 }
 
 seed().catch(console.error);
