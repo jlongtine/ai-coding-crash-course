@@ -199,3 +199,113 @@ export function getInstructorAnalytics(
 function sum<T>(items: T[], value: (item: T) => number) {
   return items.reduce((total, item) => total + value(item), 0);
 }
+
+/**
+ * The same figures as a row of `getInstructorAnalytics`, for one course of
+ * any status. Undefined when the course doesn't exist.
+ */
+export function getCourseAnalytics(
+  courseId: number
+): CourseAnalytics | undefined {
+  const course = db
+    .select({
+      id: courses.id,
+      title: courses.title,
+      slug: courses.slug,
+      status: courses.status,
+    })
+    .from(courses)
+    .where(eq(courses.id, courseId))
+    .get();
+  if (!course) return undefined;
+
+  const ids = [courseId];
+  return {
+    courseId: course.id,
+    title: course.title,
+    slug: course.slug,
+    status: course.status,
+    students: countStudentsByCourse(ids).get(courseId) ?? 0,
+    grossSalesCents: sumGrossSalesByCourse(ids).get(courseId) ?? 0,
+    completedStudents: countCompletedStudentsByCourse(ids).get(courseId) ?? 0,
+    rating: getCourseRatingSummaries(ids).get(courseId) ?? {
+      average: null,
+      count: 0,
+    },
+  };
+}
+
+export type LessonDropOffRow = {
+  lessonId: number;
+  lessonTitle: string;
+  moduleId: number;
+  moduleTitle: string;
+  completed: number;
+};
+
+export type LessonDropOff = {
+  students: number;
+  lessons: LessonDropOffRow[];
+};
+
+/**
+ * Every lesson in a course, in module-then-lesson position order, with how
+ * many enrolled students have completed it, plus the course's student count.
+ */
+export function getLessonDropOff(courseId: number): LessonDropOff {
+  const lessonRows = db
+    .select({
+      lessonId: lessons.id,
+      lessonTitle: lessons.title,
+      moduleId: modules.id,
+      moduleTitle: modules.title,
+    })
+    .from(lessons)
+    .innerJoin(modules, eq(modules.id, lessons.moduleId))
+    .where(eq(modules.courseId, courseId))
+    .orderBy(
+      asc(modules.position),
+      asc(modules.id),
+      asc(lessons.position),
+      asc(lessons.id)
+    )
+    .all();
+
+  const completedByLesson = countCompletionsByLesson(courseId);
+
+  return {
+    students: countStudentsByCourse([courseId]).get(courseId) ?? 0,
+    lessons: lessonRows.map((row) => ({
+      ...row,
+      completed: completedByLesson.get(row.lessonId) ?? 0,
+    })),
+  };
+}
+
+/**
+ * Enrolled students per lesson of a course with a completed progress row.
+ * Lessons nobody has completed are absent.
+ */
+function countCompletionsByLesson(courseId: number): Map<number, number> {
+  const rows = db
+    .select({
+      lessonId: lessons.id,
+      count: sql<number>`count(distinct ${enrollments.userId})`,
+    })
+    .from(lessons)
+    .innerJoin(modules, eq(modules.id, lessons.moduleId))
+    .innerJoin(enrollments, eq(enrollments.courseId, modules.courseId))
+    .innerJoin(
+      lessonProgress,
+      and(
+        eq(lessonProgress.lessonId, lessons.id),
+        eq(lessonProgress.userId, enrollments.userId),
+        eq(lessonProgress.status, LessonProgressStatus.Completed)
+      )
+    )
+    .where(eq(modules.courseId, courseId))
+    .groupBy(lessons.id)
+    .all();
+
+  return new Map(rows.map((row) => [row.lessonId, row.count]));
+}
