@@ -12,6 +12,7 @@ import { Skeleton } from "~/components/ui/skeleton";
 import {
   AlertTriangle,
   BarChart3,
+  CircleCheck,
   GraduationCap,
   MessageCircleQuestion,
   Pencil,
@@ -81,6 +82,23 @@ function statusBadge(status: string) {
     default:
       return null;
   }
+}
+
+const percentFormat = new Intl.NumberFormat("en-US", {
+  style: "percent",
+  maximumFractionDigits: 0,
+});
+
+function formatCompletionRate(completedStudents: number, students: number) {
+  return students === 0
+    ? "—"
+    : percentFormat.format(completedStudents / students);
+}
+
+function formatRating(rating: { average: number | null; count: number }) {
+  return rating.average === null
+    ? "—"
+    : `${rating.average.toFixed(1)} (${numberFormat.format(rating.count)})`;
 }
 
 function StatTile({
@@ -171,6 +189,14 @@ export default function InstructorDashboard({
           icon={<Users className="size-5" />}
         />
         <StatTile
+          label="Avg completion"
+          value={formatCompletionRate(
+            totals.completedStudents,
+            totals.students
+          )}
+          icon={<CircleCheck className="size-5" />}
+        />
+        <StatTile
           label="Unanswered questions"
           value={numberFormat.format(unansweredQuestions)}
           icon={<MessageCircleQuestion className="size-5" />}
@@ -200,6 +226,8 @@ export default function InstructorDashboard({
                 <tr className="border-b border-border bg-muted/50">
                   <th className={headerCell}>Course</th>
                   <th className={numericHeaderCell}>Students</th>
+                  <th className={numericHeaderCell}>Completion</th>
+                  <th className={numericHeaderCell}>Rating</th>
                   <th className={headerCell}>
                     <span className="sr-only">Actions</span>
                   </th>
@@ -224,6 +252,15 @@ export default function InstructorDashboard({
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums">
                       {numberFormat.format(course.students)}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums">
+                      {formatCompletionRate(
+                        course.completedStudents,
+                        course.students
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums">
+                      {formatRating(course.rating)}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-2">
