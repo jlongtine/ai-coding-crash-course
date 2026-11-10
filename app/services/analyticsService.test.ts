@@ -165,6 +165,10 @@ describe("analyticsService", () => {
       expect(analytics).toEqual({
         courses: [],
         totals: { students: 0, grossSalesCents: 0, completedStudents: 0 },
+        recent: {
+          grossSalesCents: { last30Days: 0, previous30Days: 0 },
+          newStudents: { last30Days: 0, previous30Days: 0 },
+        },
       });
     });
   });
@@ -280,6 +284,147 @@ describe("gross sales", () => {
       }),
     ]);
     expect(analytics.totals.grossSalesCents).toBe(7499);
+  });
+});
+
+describe("30-day changes", () => {
+  const now = new Date("2026-06-30T12:00:00.000Z");
+  const DAY = 24 * 60 * 60 * 1000;
+
+  function daysAgo(days: number, extraMs = 0) {
+    return new Date(now.getTime() - days * DAY + extraMs).toISOString();
+  }
+
+  function purchase(courseId: number, amountPaid: number, createdAt: string) {
+    testDb
+      .insert(schema.purchases)
+      .values({
+        userId: createStudent().id,
+        courseId,
+        amountPaid,
+        country: "US",
+        createdAt,
+      })
+      .run();
+  }
+
+  function enrollAt(courseId: number, enrolledAt: string) {
+    testDb
+      .insert(schema.enrollments)
+      .values({ userId: createStudent().id, courseId, enrolledAt })
+      .run();
+  }
+
+  beforeEach(() => {
+    testDb = createTestDb();
+    base = seedBaseData(testDb);
+  });
+
+  it("splits gross sales into the last 30 days and the 30 days before", () => {
+    purchase(base.course.id, 100, daysAgo(1));
+    purchase(base.course.id, 200, daysAgo(29));
+    purchase(base.course.id, 400, daysAgo(31));
+    purchase(base.course.id, 800, daysAgo(59));
+
+    const { recent } = getInstructorAnalytics(base.instructor.id, now);
+
+    expect(recent.grossSalesCents).toEqual({
+      last30Days: 300,
+      previous30Days: 1200,
+    });
+  });
+
+  it("splits new students into the last 30 days and the 30 days before", () => {
+    enrollAt(base.course.id, daysAgo(2));
+    enrollAt(base.course.id, daysAgo(10));
+    enrollAt(base.course.id, daysAgo(20));
+    enrollAt(base.course.id, daysAgo(45));
+
+    const { recent } = getInstructorAnalytics(base.instructor.id, now);
+
+    expect(recent.newStudents).toEqual({ last30Days: 3, previous30Days: 1 });
+  });
+
+  it("puts a row at exactly 30 days ago in the last 30 days, and one at exactly 60 days ago in the previous 30", () => {
+    purchase(base.course.id, 100, daysAgo(30));
+    purchase(base.course.id, 200, daysAgo(30, -1));
+    purchase(base.course.id, 400, daysAgo(60));
+    enrollAt(base.course.id, daysAgo(30));
+    enrollAt(base.course.id, daysAgo(30, -1));
+    enrollAt(base.course.id, daysAgo(60));
+
+    const { recent } = getInstructorAnalytics(base.instructor.id, now);
+
+    expect(recent.grossSalesCents).toEqual({
+      last30Days: 100,
+      previous30Days: 600,
+    });
+    expect(recent.newStudents).toEqual({ last30Days: 1, previous30Days: 2 });
+  });
+
+  it("excludes rows from before both windows and from now onwards", () => {
+    purchase(base.course.id, 100, daysAgo(60, -1));
+    purchase(base.course.id, 200, daysAgo(0));
+    purchase(base.course.id, 400, daysAgo(-1));
+    enrollAt(base.course.id, daysAgo(60, -1));
+    enrollAt(base.course.id, daysAgo(0));
+    enrollAt(base.course.id, daysAgo(-1));
+
+    const analytics = getInstructorAnalytics(base.instructor.id, now);
+
+    expect(analytics.recent).toEqual({
+      grossSalesCents: { last30Days: 0, previous30Days: 0 },
+      newStudents: { last30Days: 0, previous30Days: 0 },
+    });
+    expect(analytics.totals).toMatchObject({
+      students: 3,
+      grossSalesCents: 700,
+    });
+  });
+
+  it("totals the windows across published and archived courses, excluding drafts and other instructors' courses", () => {
+    const archived = createCourse("Old Course", schema.CourseStatus.Archived);
+    const draft = createCourse("Draft Course", schema.CourseStatus.Draft);
+    const other = testDb
+      .insert(schema.users)
+      .values({
+        name: "Other Instructor",
+        email: "other-instructor@example.com",
+        role: schema.UserRole.Instructor,
+      })
+      .returning()
+      .get();
+    const theirs = createCourse(
+      "Their Course",
+      schema.CourseStatus.Published,
+      other.id
+    );
+    for (const course of [base.course, archived, draft, theirs]) {
+      purchase(course.id, 1000, daysAgo(5));
+      purchase(course.id, 300, daysAgo(40));
+      enrollAt(course.id, daysAgo(5));
+      enrollAt(course.id, daysAgo(40));
+      enrollAt(course.id, daysAgo(41));
+    }
+
+    const { recent } = getInstructorAnalytics(base.instructor.id, now);
+
+    expect(recent).toEqual({
+      grossSalesCents: { last30Days: 2000, previous30Days: 600 },
+      newStudents: { last30Days: 2, previous30Days: 4 },
+    });
+  });
+
+  it("defaults to the current time", () => {
+    purchase(base.course.id, 500, new Date(Date.now() - DAY).toISOString());
+    enrollAt(base.course.id, new Date(Date.now() - DAY).toISOString());
+
+    const { recent } = getInstructorAnalytics(base.instructor.id);
+
+    expect(recent).toEqual({
+      grossSalesCents: { last30Days: 500, previous30Days: 0 },
+      newStudents: { last30Days: 1, previous30Days: 0 },
+    });
   });
 });
 
