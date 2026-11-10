@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "~/db";
-import { courses, CourseStatus, enrollments } from "~/db/schema";
+import { courses, CourseStatus, enrollments, purchases } from "~/db/schema";
 
 // ─── Analytics Service ───
 // The one place instructor analytics are calculated. Every metric is computed
@@ -20,10 +20,12 @@ export type CourseAnalytics = {
   slug: string;
   status: CourseStatus;
   students: number;
+  grossSalesCents: number;
 };
 
 export type AnalyticsTotals = {
   students: number;
+  grossSalesCents: number;
 };
 
 export type InstructorAnalytics = {
@@ -68,6 +70,25 @@ function countStudentsByCourse(courseIds: number[]): Map<number, number> {
 }
 
 /**
+ * Amount paid per course, in cents: after the country discount, with a team
+ * purchase counted once at its full amount. Courses with no purchases are
+ * absent.
+ */
+function sumGrossSalesByCourse(courseIds: number[]): Map<number, number> {
+  const rows = db
+    .select({
+      courseId: purchases.courseId,
+      total: sql<number>`sum(${purchases.amountPaid})`,
+    })
+    .from(purchases)
+    .where(inArray(purchases.courseId, courseIds))
+    .groupBy(purchases.courseId)
+    .all();
+
+  return new Map(rows.map((row) => [row.courseId, row.total]));
+}
+
+/**
  * Per-course metrics for every in-scope course an instructor owns, ordered by
  * title, plus totals across them.
  */
@@ -78,6 +99,7 @@ export function getInstructorAnalytics(
   const courseIds = scope.map((course) => course.id);
 
   const studentsByCourse = countStudentsByCourse(courseIds);
+  const grossSalesByCourse = sumGrossSalesByCourse(courseIds);
 
   const courseAnalytics = scope.map(
     (course): CourseAnalytics => ({
@@ -86,6 +108,7 @@ export function getInstructorAnalytics(
       slug: course.slug,
       status: course.status,
       students: studentsByCourse.get(course.id) ?? 0,
+      grossSalesCents: grossSalesByCourse.get(course.id) ?? 0,
     })
   );
 
@@ -93,6 +116,7 @@ export function getInstructorAnalytics(
     courses: courseAnalytics,
     totals: {
       students: sum(courseAnalytics, (course) => course.students),
+      grossSalesCents: sum(courseAnalytics, (course) => course.grossSalesCents),
     },
   };
 }

@@ -5,6 +5,7 @@ import { getCoursesByInstructor } from "~/services/courseService";
 import { getInstructorAnalytics } from "~/services/analyticsService";
 import { getUnansweredQuestions } from "~/services/commentService";
 import { getCurrentUserId } from "~/lib/session";
+import { formatPrice } from "~/lib/utils";
 import { getUserById } from "~/services/userService";
 import { Card, CardContent } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
@@ -12,6 +13,7 @@ import { Skeleton } from "~/components/ui/skeleton";
 import {
   AlertTriangle,
   BarChart3,
+  DollarSign,
   GraduationCap,
   MessageCircleQuestion,
   Pencil,
@@ -30,6 +32,11 @@ import { CourseStatus, UserRole } from "~/db/schema";
 // instructor can still reach their editor from here.
 
 const numberFormat = new Intl.NumberFormat("en-US");
+
+// formatPrice shows zero as "Free", which reads wrong for sales.
+function formatGrossSales(cents: number) {
+  return cents === 0 ? "$0.00" : formatPrice(cents);
+}
 
 export function meta() {
   return [
@@ -124,7 +131,7 @@ export function HydrateFallback() {
         <Skeleton className="h-10 w-32" />
       </div>
       <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {Array.from({ length: 2 }).map((_, i) => (
+        {Array.from({ length: 3 }).map((_, i) => (
           <Skeleton key={i} className="h-28 rounded-xl" />
         ))}
       </div>
@@ -166,6 +173,11 @@ export default function InstructorDashboard({
 
       <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatTile
+          label="Gross sales"
+          value={formatGrossSales(totals.grossSalesCents)}
+          icon={<DollarSign className="size-5" />}
+        />
+        <StatTile
           label="Total students"
           value={numberFormat.format(totals.students)}
           icon={<Users className="size-5" />}
@@ -200,6 +212,7 @@ export default function InstructorDashboard({
                 <tr className="border-b border-border bg-muted/50">
                   <th className={headerCell}>Course</th>
                   <th className={numericHeaderCell}>Students</th>
+                  <th className={numericHeaderCell}>Gross sales</th>
                   <th className={headerCell}>
                     <span className="sr-only">Actions</span>
                   </th>
@@ -224,6 +237,9 @@ export default function InstructorDashboard({
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums">
                       {numberFormat.format(course.students)}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums">
+                      {formatGrossSales(course.grossSalesCents)}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-2">
