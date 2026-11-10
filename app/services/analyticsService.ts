@@ -1,4 +1,12 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  sql,
+  type AnyColumn,
+  type SQL,
+} from "drizzle-orm";
 import { db } from "~/db";
 import {
   courses,
@@ -62,7 +70,8 @@ export type InstructorAnalytics = {
 
 const IN_SCOPE_STATUSES = [CourseStatus.Published, CourseStatus.Archived];
 
-function getInScopeCourses(instructorId: number) {
+/** In-scope courses (published or archived) matching `where`, by title. */
+function getInScopeCourses(where: SQL | undefined) {
   return db
     .select({
       id: courses.id,
@@ -71,14 +80,31 @@ function getInScopeCourses(instructorId: number) {
       status: courses.status,
     })
     .from(courses)
-    .where(
-      and(
-        eq(courses.instructorId, instructorId),
-        inArray(courses.status, IN_SCOPE_STATUSES)
-      )
-    )
+    .where(and(where, inArray(courses.status, IN_SCOPE_STATUSES)))
     .orderBy(asc(courses.title), asc(courses.id))
     .all();
+}
+
+/** Per-course metrics for `inScopeCourses`, in the same order. */
+function summarizeCourses(
+  inScopeCourses: ReturnType<typeof getInScopeCourses>
+): CourseAnalytics[] {
+  const courseIds = inScopeCourses.map((course) => course.id);
+  const studentsByCourse = countStudentsByCourse(courseIds);
+  const grossSalesByCourse = sumGrossSalesByCourse(courseIds);
+  const completedStudentsByCourse = countCompletedStudentsByCourse(courseIds);
+  const ratingsByCourse = getCourseRatingSummaries(courseIds);
+
+  return inScopeCourses.map((course) => ({
+    courseId: course.id,
+    title: course.title,
+    slug: course.slug,
+    status: course.status,
+    students: studentsByCourse.get(course.id) ?? 0,
+    grossSalesCents: grossSalesByCourse.get(course.id) ?? 0,
+    completedStudents: completedStudentsByCourse.get(course.id) ?? 0,
+    rating: ratingsByCourse.get(course.id) ?? { average: null, count: 0 },
+  }));
 }
 
 /** Enrollment count per course. Courses with no enrollments are absent. */
@@ -169,63 +195,50 @@ function countCompletedStudentsByCourse(
 }
 
 /**
- * The two 30-day windows ending at `now`, as ISO strings comparable with the
- * stored timestamps: last 30 days is [now − 30d, now), previous 30 days is
- * [now − 60d, now − 30d).
+ * Selections summing `value` into the two 30-day windows ending at `now`,
+ * bucketed by `timestamp`: last 30 days is [now − 30d, now), previous 30 days
+ * is [now − 60d, now − 30d). Bounds are ISO strings, the stored format.
  */
-function thirtyDayWindows(now: Date) {
+function thirtyDayWindowSums(
+  timestamp: AnyColumn,
+  value: AnyColumn | SQL,
+  now: Date
+) {
   const day = 24 * 60 * 60 * 1000;
+  const end = now.toISOString();
+  const middle = new Date(now.getTime() - 30 * day).toISOString();
+  const start = new Date(now.getTime() - 60 * day).toISOString();
+  const windowSum = (from: string, to: string) =>
+    sql<number>`coalesce(sum(case when ${timestamp} >= ${from} and ${timestamp} < ${to} then ${value} end), 0)`;
+
   return {
-    end: now.toISOString(),
-    middle: new Date(now.getTime() - 30 * day).toISOString(),
-    start: new Date(now.getTime() - 60 * day).toISOString(),
+    last30Days: windowSum(middle, end),
+    previous30Days: windowSum(start, middle),
   };
 }
 
-/**
- * Amount paid across the courses in each 30-day window, bucketed by purchase
- * date.
- */
+/** Amount paid across the courses in each 30-day window, by purchase date. */
 function sumGrossSalesInWindows(
   courseIds: number[],
   now: Date
 ): WindowedValues {
-  const { start, middle, end } = thirtyDayWindows(now);
-  const createdAt = purchases.createdAt;
-
-  const row = db
-    .select({
-      last30Days: sql<number>`coalesce(sum(case when ${createdAt} >= ${middle} and ${createdAt} < ${end} then ${purchases.amountPaid} end), 0)`,
-      previous30Days: sql<number>`coalesce(sum(case when ${createdAt} >= ${start} and ${createdAt} < ${middle} then ${purchases.amountPaid} end), 0)`,
-    })
+  return db
+    .select(thirtyDayWindowSums(purchases.createdAt, purchases.amountPaid, now))
     .from(purchases)
     .where(inArray(purchases.courseId, courseIds))
-    .get();
-
-  return row ?? { last30Days: 0, previous30Days: 0 };
+    .get()!;
 }
 
-/**
- * New enrollments across the courses in each 30-day window, bucketed by
- * enrollment date.
- */
+/** New enrollments across the courses in each 30-day window, by enrollment date. */
 function countNewStudentsInWindows(
   courseIds: number[],
   now: Date
 ): WindowedValues {
-  const { start, middle, end } = thirtyDayWindows(now);
-  const enrolledAt = enrollments.enrolledAt;
-
-  const row = db
-    .select({
-      last30Days: sql<number>`count(case when ${enrolledAt} >= ${middle} and ${enrolledAt} < ${end} then 1 end)`,
-      previous30Days: sql<number>`count(case when ${enrolledAt} >= ${start} and ${enrolledAt} < ${middle} then 1 end)`,
-    })
+  return db
+    .select(thirtyDayWindowSums(enrollments.enrolledAt, sql`1`, now))
     .from(enrollments)
     .where(inArray(enrollments.courseId, courseIds))
-    .get();
-
-  return row ?? { last30Days: 0, previous30Days: 0 };
+    .get()!;
 }
 
 /**
@@ -236,26 +249,11 @@ export function getInstructorAnalytics(
   instructorId: number,
   now: Date = new Date()
 ): InstructorAnalytics {
-  const scope = getInScopeCourses(instructorId);
-  const courseIds = scope.map((course) => course.id);
-
-  const studentsByCourse = countStudentsByCourse(courseIds);
-  const grossSalesByCourse = sumGrossSalesByCourse(courseIds);
-  const completedStudentsByCourse = countCompletedStudentsByCourse(courseIds);
-  const ratingsByCourse = getCourseRatingSummaries(courseIds);
-  const recentGrossSales = sumGrossSalesInWindows(courseIds, now);
-  const recentNewStudents = countNewStudentsInWindows(courseIds, now);
-
-  const courseAnalytics = scope.map((course): CourseAnalytics => ({
-    courseId: course.id,
-    title: course.title,
-    slug: course.slug,
-    status: course.status,
-    students: studentsByCourse.get(course.id) ?? 0,
-    grossSalesCents: grossSalesByCourse.get(course.id) ?? 0,
-    completedStudents: completedStudentsByCourse.get(course.id) ?? 0,
-    rating: ratingsByCourse.get(course.id) ?? { average: null, count: 0 },
-  }));
+  const inScopeCourses = getInScopeCourses(
+    eq(courses.instructorId, instructorId)
+  );
+  const courseIds = inScopeCourses.map((course) => course.id);
+  const courseAnalytics = summarizeCourses(inScopeCourses);
 
   return {
     courses: courseAnalytics,
@@ -268,8 +266,8 @@ export function getInstructorAnalytics(
       ),
     },
     recent: {
-      grossSalesCents: recentGrossSales,
-      newStudents: recentNewStudents,
+      grossSalesCents: sumGrossSalesInWindows(courseIds, now),
+      newStudents: countNewStudentsInWindows(courseIds, now),
     },
   };
 }
@@ -279,38 +277,14 @@ function sum<T>(items: T[], value: (item: T) => number) {
 }
 
 /**
- * The same figures as a row of `getInstructorAnalytics`, for one course of
- * any status. Undefined when the course doesn't exist.
+ * The same figures as a row of `getInstructorAnalytics`, for one course.
+ * Undefined when the course doesn't exist or is a draft, since drafts are
+ * outside analytics.
  */
 export function getCourseAnalytics(
   courseId: number
 ): CourseAnalytics | undefined {
-  const course = db
-    .select({
-      id: courses.id,
-      title: courses.title,
-      slug: courses.slug,
-      status: courses.status,
-    })
-    .from(courses)
-    .where(eq(courses.id, courseId))
-    .get();
-  if (!course) return undefined;
-
-  const ids = [courseId];
-  return {
-    courseId: course.id,
-    title: course.title,
-    slug: course.slug,
-    status: course.status,
-    students: countStudentsByCourse(ids).get(courseId) ?? 0,
-    grossSalesCents: sumGrossSalesByCourse(ids).get(courseId) ?? 0,
-    completedStudents: countCompletedStudentsByCourse(ids).get(courseId) ?? 0,
-    rating: getCourseRatingSummaries(ids).get(courseId) ?? {
-      average: null,
-      count: 0,
-    },
-  };
+  return summarizeCourses(getInScopeCourses(eq(courses.id, courseId)))[0];
 }
 
 export type LessonDropOffRow = {

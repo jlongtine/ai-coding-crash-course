@@ -1173,13 +1173,15 @@ export default function InstructorCourseEditor({
           <span className="text-xs text-muted-foreground">
             Slug: /courses/{course.slug}
           </span>
-          <Link
-            to={`/instructor/${course.id}/analytics`}
-            className="flex items-center gap-1.5 hover:text-foreground"
-          >
-            <BarChart3 className="size-4" />
-            Analytics
-          </Link>
+          {course.status !== CourseStatus.Draft && (
+            <Link
+              to={`/instructor/${course.id}/analytics`}
+              className="flex items-center gap-1.5 hover:text-foreground"
+            >
+              <BarChart3 className="size-4" />
+              Analytics
+            </Link>
+          )}
         </div>
       </div>
 

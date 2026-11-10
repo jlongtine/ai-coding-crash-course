@@ -17,11 +17,15 @@ export function formatRate(part: number, whole: number) {
   return whole === 0 ? "—" : percentFormat.format(part / whole);
 }
 
-export function formatCompletionRate(
-  completedStudents: number,
-  students: number
-) {
-  return formatRate(completedStudents, students);
+const wholeDollarFormat = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 0,
+});
+
+/** Cents as whole dollars, e.g. "$410", for approximate figures like changes. */
+export function formatWholeDollars(cents: number) {
+  return wholeDollarFormat.format(cents / 100);
 }
 
 export function formatRating(rating: {

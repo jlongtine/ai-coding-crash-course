@@ -1,16 +1,21 @@
 import { Link } from "react-router";
 import type { Route } from "./+types/instructor";
 import { getCoursesByInstructor } from "~/services/courseService";
-import { getInstructorAnalytics } from "~/services/analyticsService";
+import {
+  getInstructorAnalytics,
+  type WindowedValues,
+} from "~/services/analyticsService";
 import { getUnansweredQuestions } from "~/services/commentService";
 import { getCurrentUserId } from "~/lib/session";
 import { formatCurrency } from "~/lib/utils";
 import {
-  formatCompletionRate,
   formatCount,
+  formatRate,
   formatRating,
+  formatWholeDollars,
 } from "~/lib/analytics-format";
 import { StatTile } from "~/components/stat-tile";
+import { headerCell, numericHeaderCell } from "~/components/analytics-table";
 import { getUserById } from "~/services/userService";
 import { Card, CardContent } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
@@ -90,13 +95,9 @@ function statusBadge(status: string) {
 }
 
 /** last30Days − previous30Days, for a tile's "vs previous 30 days" line. */
-function changeOf(recent: { last30Days: number; previous30Days: number }) {
+function changeOf(recent: WindowedValues) {
   return recent.last30Days - recent.previous30Days;
 }
-
-const headerCell =
-  "px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground";
-const numericHeaderCell = `${headerCell} text-right`;
 
 export function HydrateFallback() {
   return (
@@ -156,7 +157,7 @@ export default function InstructorDashboard({
           icon={<DollarSign className="size-5" />}
           change={{
             delta: changeOf(recent.grossSalesCents),
-            format: formatCurrency,
+            format: formatWholeDollars,
           }}
         />
         <StatTile
@@ -170,7 +171,7 @@ export default function InstructorDashboard({
         />
         <StatTile
           label="Avg completion"
-          value={formatCompletionRate(
+          value={formatRate(
             totals.completedStudents,
             totals.students
           )}
@@ -238,7 +239,7 @@ export default function InstructorDashboard({
                       {formatCurrency(course.grossSalesCents)}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums">
-                      {formatCompletionRate(
+                      {formatRate(
                         course.completedStudents,
                         course.students
                       )}

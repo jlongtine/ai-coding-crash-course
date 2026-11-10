@@ -8,13 +8,9 @@ import {
 } from "~/services/analyticsService";
 import { requireStaff } from "~/lib/access.server";
 import { formatCurrency } from "~/lib/utils";
-import {
-  formatCompletionRate,
-  formatCount,
-  formatRate,
-  formatRating,
-} from "~/lib/analytics-format";
+import { formatCount, formatRate, formatRating } from "~/lib/analytics-format";
 import { StatTile } from "~/components/stat-tile";
+import { headerCell, numericHeaderCell } from "~/components/analytics-table";
 import { Card } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import {
@@ -78,20 +74,11 @@ function biggestDropLessonId(rows: DropOffRow[]) {
   return biggest?.lessonId ?? null;
 }
 
-function formatDrop(drop: number | null, students: number) {
+function formatDrop(drop: number | null) {
   if (drop === null) return "—";
   if (drop === 0) return "0";
-  // Shown in students, and in percentage points of enrolled students.
-  const sign = drop > 0 ? "−" : "+";
-  const count = `${sign}${formatCount(Math.abs(drop))}`;
-  return students === 0
-    ? count
-    : `${count} (${sign}${Math.round((Math.abs(drop) / students) * 100)} pts)`;
+  return `${drop > 0 ? "−" : "+"}${formatCount(Math.abs(drop))}`;
 }
-
-const headerCell =
-  "px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground";
-const numericHeaderCell = `${headerCell} text-right`;
 
 export default function CourseAnalytics({ loaderData }: Route.ComponentProps) {
   const { course, dropOff } = loaderData;
@@ -144,10 +131,7 @@ export default function CourseAnalytics({ loaderData }: Route.ComponentProps) {
         />
         <StatTile
           label="Completion"
-          value={formatCompletionRate(
-            course.completedStudents,
-            course.students
-          )}
+          value={formatRate(course.completedStudents, course.students)}
           icon={<CircleCheck className="size-5" />}
         />
         <StatTile
@@ -248,7 +232,7 @@ export default function CourseAnalytics({ loaderData }: Route.ComponentProps) {
                               : "px-4 py-3 text-right tabular-nums"
                           }
                         >
-                          {formatDrop(row.drop, students)}
+                          {formatDrop(row.drop)}
                         </td>
                       </tr>
                     </Fragment>

@@ -55,13 +55,17 @@ function createCourse(
     .get();
 }
 
+function enroll(courseId: number) {
+  const student = createStudent();
+  testDb
+    .insert(schema.enrollments)
+    .values({ userId: student.id, courseId })
+    .run();
+  return student;
+}
+
 function enrollStudents(courseId: number, count: number) {
-  for (let i = 0; i < count; i++) {
-    testDb
-      .insert(schema.enrollments)
-      .values({ userId: createStudent().id, courseId })
-      .run();
-  }
+  for (let i = 0; i < count; i++) enroll(courseId);
 }
 
 describe("analyticsService", () => {
@@ -420,10 +424,12 @@ describe("30-day changes", () => {
   });
 
   it("defaults to the current time", () => {
-    purchase(base.course.id, 500, new Date(Date.now() - DAY).toISOString());
-    enrollAt(base.course.id, new Date(Date.now() - DAY).toISOString());
+    vi.useFakeTimers({ now });
+    purchase(base.course.id, 500, daysAgo(30));
+    enrollAt(base.course.id, daysAgo(30));
 
     const { recent } = getInstructorAnalytics(base.instructor.id);
+    vi.useRealTimers();
 
     expect(recent).toEqual({
       grossSalesCents: { last30Days: 500, previous30Days: 0 },
@@ -464,15 +470,6 @@ describe("completion and ratings", () => {
             .get().id
       );
     });
-  }
-
-  function enroll(courseId: number) {
-    const student = createStudent();
-    testDb
-      .insert(schema.enrollments)
-      .values({ userId: student.id, courseId })
-      .run();
-    return student;
   }
 
   function setProgress(
@@ -670,15 +667,6 @@ describe("course analytics and drop-off", () => {
       .get();
   }
 
-  function enroll(courseId: number) {
-    const student = createStudent();
-    testDb
-      .insert(schema.enrollments)
-      .values({ userId: student.id, courseId })
-      .run();
-    return student;
-  }
-
   function complete(
     userId: number,
     lessonIds: number[],
@@ -792,7 +780,7 @@ describe("course analytics and drop-off", () => {
     ).toEqual(["Our lesson"]);
   });
 
-  it("summarises one course the same way as the instructor's course table", () => {
+  it("summarises one course's figures", () => {
     const archived = createCourse("Old Course", schema.CourseStatus.Archived);
     const mod = createModule(base.course.id, "Basics", 1);
     const lesson = createLesson(mod.id, "One", 1);
@@ -819,11 +807,13 @@ describe("course analytics and drop-off", () => {
       completedStudents: 1,
       rating: { average: 4, count: 1 },
     });
-    expect(summary).toEqual(
-      getInstructorAnalytics(base.instructor.id).courses.find(
-        (course) => course.courseId === base.course.id
-      )
-    );
+  });
+
+  it("returns no summary for a draft course", () => {
+    const draft = createCourse("Draft Course", schema.CourseStatus.Draft);
+    enroll(draft.id);
+
+    expect(getCourseAnalytics(draft.id)).toBeUndefined();
   });
 
   it("returns no summary for a course that doesn't exist", () => {
