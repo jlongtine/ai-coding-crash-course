@@ -103,7 +103,7 @@ export default function CourseAnalytics({ loaderData }: Route.ComponentProps) {
         <span className="text-foreground">Analytics</span>
       </nav>
 
-      <div className="mb-8 flex items-center justify-between gap-4">
+      <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold">{course.title}</h1>
           <p className="mt-1 text-muted-foreground">

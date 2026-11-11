@@ -102,7 +102,7 @@ function changeOf(recent: WindowedValues) {
 export function HydrateFallback() {
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
-      <div className="mb-8 flex items-center justify-between">
+      <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
         <div>
           <Skeleton className="h-9 w-40" />
           <Skeleton className="mt-2 h-5 w-72" />
@@ -135,7 +135,7 @@ export default function InstructorDashboard({
         <span className="text-foreground">My Courses</span>
       </nav>
 
-      <div className="mb-8 flex items-center justify-between">
+      <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold">My Courses</h1>
           <p className="mt-1 text-muted-foreground">

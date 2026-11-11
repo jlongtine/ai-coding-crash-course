@@ -50,12 +50,14 @@ export function StatTile({
       className={to ? "h-full transition-colors hover:bg-muted/50" : "h-full"}
     >
       <CardContent className="flex items-start justify-between gap-4">
-        <div>
+        <div className="min-w-0">
           <p className="text-sm text-muted-foreground">{label}</p>
-          <p className="mt-1 text-3xl font-bold tabular-nums">{value}</p>
+          <p className="mt-1 text-2xl font-bold tabular-nums sm:text-3xl">
+            {value}
+          </p>
           {change && <ChangeLine {...change} />}
         </div>
-        <span className="text-muted-foreground">{icon}</span>
+        <span className="shrink-0 text-muted-foreground">{icon}</span>
       </CardContent>
     </Card>
   );
