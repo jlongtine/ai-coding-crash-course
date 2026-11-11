@@ -1,21 +1,51 @@
 import { Link } from "react-router";
 import type { Route } from "./+types/instructor";
-import { getCoursesByInstructor, getLessonCountForCourse } from "~/services/courseService";
-import { getEnrollmentCountForCourse } from "~/services/enrollmentService";
+import { getCoursesByInstructor } from "~/services/courseService";
+import {
+  getInstructorAnalytics,
+  type WindowedValues,
+} from "~/services/analyticsService";
+import { getUnansweredQuestions } from "~/services/commentService";
 import { getCurrentUserId } from "~/lib/session";
+import { formatCurrency } from "~/lib/utils";
+import {
+  formatCount,
+  formatRate,
+  formatRating,
+  formatWholeDollars,
+} from "~/lib/analytics-format";
+import { StatTile } from "~/components/stat-tile";
+import { headerCell, numericHeaderCell } from "~/components/analytics-table";
 import { getUserById } from "~/services/userService";
-import { Card, CardContent, CardFooter, CardHeader } from "~/components/ui/card";
+import { Card, CardContent } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
-import { AlertTriangle, BookOpen, GraduationCap, Plus, Users } from "lucide-react";
-import { CourseImage } from "~/components/course-image";
+import {
+  AlertTriangle,
+  BarChart3,
+  DollarSign,
+  CircleCheck,
+  GraduationCap,
+  MessageCircleQuestion,
+  Pencil,
+  Plus,
+  Users,
+} from "lucide-react";
 import { data, isRouteErrorResponse } from "react-router";
 import { CourseStatus, UserRole } from "~/db/schema";
+
+// ─── Instructor Landing Page ───
+// An analytics overview: headline tiles, then one table row per published or
+// archived course. Metrics come from analyticsService as raw numbers and are
+// formatted here.
+//
+// Drafts sit outside analytics, but they are listed below the table so the
+// instructor can still reach their editor from here.
 
 export function meta() {
   return [
     { title: "My Courses — Cadence" },
-    { name: "description", content: "Manage your courses" },
+    { name: "description", content: "How your courses are doing" },
   ];
 }
 
@@ -36,27 +66,13 @@ export async function loader({ request }: Route.LoaderArgs) {
     });
   }
 
-  const instructorCourses = getCoursesByInstructor(currentUserId);
+  const analytics = getInstructorAnalytics(currentUserId);
+  const unansweredQuestions = getUnansweredQuestions(currentUserId).length;
+  const drafts = getCoursesByInstructor(currentUserId)
+    .filter((course) => course.status === CourseStatus.Draft)
+    .map((course) => ({ id: course.id, title: course.title }));
 
-  const coursesWithStats = instructorCourses.map((course) => {
-    const lessonCount = getLessonCountForCourse(course.id);
-    const enrollmentCount = getEnrollmentCountForCourse(course.id);
-
-    return {
-      id: course.id,
-      title: course.title,
-      slug: course.slug,
-      description: course.description,
-      status: course.status,
-      coverImageUrl: course.coverImageUrl,
-      lessonCount,
-      enrollmentCount,
-      createdAt: course.createdAt,
-      updatedAt: course.updatedAt,
-    };
-  });
-
-  return { courses: coursesWithStats };
+  return { ...analytics, unansweredQuestions, drafts };
 }
 
 function statusBadge(status: string) {
@@ -65,12 +81,6 @@ function statusBadge(status: string) {
       return (
         <span className="inline-flex items-center rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/30 dark:text-green-400">
           Published
-        </span>
-      );
-    case CourseStatus.Draft:
-      return (
-        <span className="inline-flex items-center rounded-full bg-yellow-100 px-2.5 py-0.5 text-xs font-medium text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400">
-          Draft
         </span>
       );
     case CourseStatus.Archived:
@@ -84,36 +94,27 @@ function statusBadge(status: string) {
   }
 }
 
+/** last30Days − previous30Days, for a tile's "vs previous 30 days" line. */
+function changeOf(recent: WindowedValues) {
+  return recent.last30Days - recent.previous30Days;
+}
+
 export function HydrateFallback() {
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
-      <div className="mb-8 flex items-center justify-between">
+      <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
         <div>
           <Skeleton className="h-9 w-40" />
           <Skeleton className="mt-2 h-5 w-72" />
         </div>
         <Skeleton className="h-10 w-32" />
       </div>
-      <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-        {Array.from({ length: 3 }).map((_, i) => (
-          <Card key={i} className="flex flex-col">
-            <Skeleton className="aspect-video rounded-b-none rounded-t-lg" />
-            <CardHeader>
-              <Skeleton className="h-5 w-3/4" />
-              <Skeleton className="h-4 w-full" />
-            </CardHeader>
-            <CardContent className="flex-1">
-              <div className="flex items-center gap-4">
-                <Skeleton className="h-4 w-20" />
-                <Skeleton className="h-4 w-20" />
-              </div>
-            </CardContent>
-            <CardFooter>
-              <Skeleton className="h-10 w-full" />
-            </CardFooter>
-          </Card>
+      <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Skeleton key={i} className="h-28 rounded-xl" />
         ))}
       </div>
+      <Skeleton className="h-64 rounded-xl" />
     </div>
   );
 }
@@ -121,7 +122,7 @@ export function HydrateFallback() {
 export default function InstructorDashboard({
   loaderData,
 }: Route.ComponentProps) {
-  const { courses } = loaderData;
+  const { courses, totals, recent, unansweredQuestions, drafts } = loaderData;
 
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -134,11 +135,11 @@ export default function InstructorDashboard({
         <span className="text-foreground">My Courses</span>
       </nav>
 
-      <div className="mb-8 flex items-center justify-between">
+      <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold">My Courses</h1>
           <p className="mt-1 text-muted-foreground">
-            Manage your courses and track enrollments
+            How your published and archived courses are doing
           </p>
         </div>
         <Link to="/instructor/new">
@@ -149,12 +150,47 @@ export default function InstructorDashboard({
         </Link>
       </div>
 
+      <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatTile
+          label="Gross sales"
+          value={formatCurrency(totals.grossSalesCents)}
+          icon={<DollarSign className="size-5" />}
+          change={{
+            delta: changeOf(recent.grossSalesCents),
+            format: formatWholeDollars,
+          }}
+        />
+        <StatTile
+          label="Total students"
+          value={formatCount(totals.students)}
+          icon={<Users className="size-5" />}
+          change={{
+            delta: changeOf(recent.newStudents),
+            format: formatCount,
+          }}
+        />
+        <StatTile
+          label="Avg completion"
+          value={formatRate(
+            totals.completedStudents,
+            totals.students
+          )}
+          icon={<CircleCheck className="size-5" />}
+        />
+        <StatTile
+          label="Unanswered questions"
+          value={formatCount(unansweredQuestions)}
+          icon={<MessageCircleQuestion className="size-5" />}
+          to="/instructor/questions"
+        />
+      </div>
+
       {courses.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16 text-center">
+        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed py-16 text-center">
           <GraduationCap className="mb-4 size-12 text-muted-foreground/50" />
-          <h2 className="text-lg font-medium">No courses yet</h2>
+          <h2 className="text-lg font-medium">No published courses yet</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Create your first course to get started.
+            Create a course and publish it to start seeing analytics.
           </p>
           <Link to="/instructor/new" className="mt-4">
             <Button>
@@ -164,59 +200,95 @@ export default function InstructorDashboard({
           </Link>
         </div>
       ) : (
-        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          {courses.map((course) => (
-            <Card key={course.id} className="flex flex-col overflow-hidden pt-0">
-              <Link to={`/courses/${course.slug}`} className="aspect-video overflow-hidden">
-                <CourseImage
-                  src={course.coverImageUrl}
-                  alt={course.title}
-                  className="h-full w-full object-cover transition-transform hover:scale-105"
-                />
-              </Link>
-              <CardHeader>
-                <div className="flex items-start justify-between gap-2">
-                  <Link
-                    to={`/courses/${course.slug}`}
-                    className="text-lg font-semibold leading-tight hover:text-primary"
+        <Card className="overflow-hidden py-0">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-border bg-muted/50">
+                  <th className={headerCell}>Course</th>
+                  <th className={numericHeaderCell}>Students</th>
+                  <th className={numericHeaderCell}>Gross sales</th>
+                  <th className={numericHeaderCell}>Completion</th>
+                  <th className={numericHeaderCell}>Rating</th>
+                  <th className={headerCell}>
+                    <span className="sr-only">Actions</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {courses.map((course) => (
+                  <tr
+                    key={course.courseId}
+                    className="border-b border-border last:border-0"
                   >
-                    {course.title}
-                  </Link>
-                  {statusBadge(course.status)}
-                </div>
-                <p className="line-clamp-2 text-sm text-muted-foreground">
-                  {course.description}
-                </p>
-              </CardHeader>
-              <CardContent className="flex-1">
-                <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                  <div className="flex items-center gap-1.5">
-                    <BookOpen className="size-4" />
-                    <span>
-                      {course.lessonCount}{" "}
-                      {course.lessonCount === 1 ? "lesson" : "lessons"}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <Users className="size-4" />
-                    <span>
-                      {course.enrollmentCount}{" "}
-                      {course.enrollmentCount === 1 ? "student" : "students"}
-                    </span>
-                  </div>
-                </div>
-              </CardContent>
-              <CardFooter>
-                <Link to={`/instructor/${course.id}`} className="w-full">
-                  <Button className="w-full" variant="outline">
-                    <BookOpen className="mr-2 size-4" />
-                    Edit Course
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <Link
+                          to={`/courses/${course.slug}`}
+                          className="font-medium hover:text-primary"
+                        >
+                          {course.title}
+                        </Link>
+                        {statusBadge(course.status)}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums">
+                      {formatCount(course.students)}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums">
+                      {formatCurrency(course.grossSalesCents)}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums">
+                      {formatRate(
+                        course.completedStudents,
+                        course.students
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums">
+                      {formatRating(course.rating)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex justify-end gap-2">
+                        <Link to={`/instructor/${course.courseId}`}>
+                          <Button variant="outline" size="sm">
+                            <Pencil className="mr-1.5 size-3.5" />
+                            Edit
+                          </Button>
+                        </Link>
+                        <Link to={`/instructor/${course.courseId}/analytics`}>
+                          <Button variant="outline" size="sm">
+                            <BarChart3 className="mr-1.5 size-3.5" />
+                            Analytics
+                          </Button>
+                        </Link>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {drafts.length > 0 && (
+        <section className="mt-8">
+          <h2 className="mb-3 text-sm font-medium text-muted-foreground">
+            Drafts
+          </h2>
+          <ul className="flex flex-wrap gap-2">
+            {drafts.map((draft) => (
+              <li key={draft.id}>
+                <Link to={`/instructor/${draft.id}`}>
+                  <Button variant="outline" size="sm">
+                    <Pencil className="mr-1.5 size-3.5" />
+                    {draft.title}
                   </Button>
                 </Link>
-              </CardFooter>
-            </Card>
-          ))}
-        </div>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
     </div>
   );
